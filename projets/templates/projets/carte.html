@@ -1,11 +1,339 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Suivie des projets</title>
+    <title>Suivi des projets terrain</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+        }
+
+        body {
+            display: flex;
+            flex-direction: column;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            color: #1d2733;
+        }
+
+        header {
+            padding: 10px 16px;
+            background: #14324a;
+            color: #fff;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 4px 24px;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 1.05rem;
+            font-weight: 600;
+        }
+
+        #etat {
+            font-size: 0.85rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 16px;
+        }
+
+        #etat .ok {
+            color: #b8e6c8;
+        }
+
+        #etat .ko {
+            color: #ffb3a7;
+        }
+
+        #carte {
+            flex: 1;
+            width: 100%;
+            min-height: 320px;
+        }
+
+        /* Marqueurs des points */
+        .pt {
+            display: block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #fff;
+            box-shadow: 0 0 0 1px #1859bc;
+        }
+
+        .pt-cercle {
+            border-radius: 50%;
+        }
+
+        .pt-losange {
+            width: 13px;
+            height: 13px;
+            margin: 2px;
+            transform: rotate(45deg);
+        }
+
+        /* Légende */
+        .legende {
+            background: #fff;
+            padding: 8px 10px;
+            border-radius: 6px;
+            box-shadow: 0 1px 5px rgba(246, 246, 11, 0.35);
+            font-size: 0.8rem;
+            line-height: 1.5;
+        }
+
+        .legende b {
+            display: block;
+            margin-bottom: 2px;
+        }
+
+        .legende i {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            margin-right: 6px;
+            border: 1px solid #3a402b;
+            vertical-align: -1px;
+        }
+
+        /* Popup */
+        .popup h4 {
+            margin: 0 0 4px;
+            font-size: 0.95rem;
+        }
+
+        .popup .badge {
+            display: inline-block;
+            padding: 1px 8px;
+            border-radius: 10px;
+            color: #fff;
+            font-size: 0.75rem;
+            margin-bottom: 4px;
+        }
+
+        .popup dl {
+            margin: 4px 0 0;
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 2px 10px;
+            font-size: 0.8rem;
+        }
+
+        .popup dt {
+            color: #5a6673;
+        }
+
+        .popup dd {
+            margin: 0;
+        }
+    </style>
 </head>
+
 <body>
-    <h1>WEBSIG DES ACTIVITES TERRAIN</h1>
+    <header>
+        <h1>WebSIG des activités terrain</h1>
+        <div id="etat"></div>
+    </header>
+    <div id="carte"></div>
+
+    <script>
+        /* ---------- Configuration ---------- */
+        // Adapter l'adresse et les noms des routes de l'API à vos urls.py
+        const API = '/api/';
+
+        const COUCHES = [
+            { id: 'forages', titre: 'Forages', url: API + 'forages/', type: 'point', forme: 'cercle' },
+            { id: 'solaires', titre: 'Électrification solaire', url: API + 'solaires/', type: 'point', forme: 'losange' },
+            { id: 'installations', titre: 'Installations solaires', url: API + 'installations/', type: 'polygone' },
+            { id: 'routes', titre: 'Routes', url: API + 'routes/', type: 'ligne' }
+        ];
+
+        // Statuts : le premier motif trouvé dans le texte du statut détermine la couleur
+        const STATUTS = [
+            { libelle: 'Suspendu', couleur: '#c0392b', motifs: ['suspendu'] },
+            // { libelle: 'En service', couleur: '#1f7a4d', motifs: ['en service'] },
+            { libelle: 'termine', couleur: '#4aa564', motifs: ['termine'] },
+            // { libelle: 'Essais', couleur: '#2f7fc1', motifs: ['essai', 'controle'] },
+            { libelle: 'En cours ', couleur: '#FAA000', motifs: ['en cours'] },
+            // { libelle: 'Études / préparation', couleur: '#7a5fb0', motifs: ['etude', 'reconnaissance', 'approvisionnement'] },
+            { libelle: 'Planifié', couleur: '#8a8f98', motifs: ['planifie'] }
+        ];
+        const COULEUR_DEFAUT = '#FAA000';
+
+        /* ---------- Outils ---------- */
+        function normaliser(t) {
+            return String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+        }
+
+        function statutDe(texte) {
+            const t = normaliser(texte);
+            return STATUTS.find(function (s) {
+                return s.motifs.some(function (m) { return t.indexOf(m) !== -1; });
+            });
+        }
+
+        function couleurStatut(texte) {
+            const s = statutDe(texte);
+            return s ? s.couleur : COULEUR_DEFAUT;
+        }
+
+        function echapper(t) {
+            return String(t).replace(/[&<>"']/g, function (c) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+            });
+        }
+
+        // Premier champ renseigné parmi plusieurs noms possibles
+        function valeur(p, cles) {
+            for (let i = 0; i < cles.length; i++) {
+                const v = p[cles[i]];
+                if (v !== undefined && v !== null && v !== '') return v;
+            }
+            return null;
+        }
+
+        const CHAMPS = [
+            ['Type', ['type_projet', 'type']],
+            ['Financement', ['financement']],
+            ['Région', ['region']],
+            ['Province', ['province']],
+            ['Localité', ['localite', 'localite_rattachement']],
+            ['Chef de chantier', ['chef_chantier', 'chef_de_chantier', 'nom_chef_chantier']],
+            ['Bénéficiaires', ['beneficiaires']],
+            ['Longueur cumulée', ['longueur_km', 'longueur_totale', 'longueur']],
+            ['Commentaire', ['commentaire']]
+        ];
+
+        function contenuPopup(feature, couche) {
+            const p = feature.properties || {};
+            const nom = valeur(p, ['nom', 'nom_projet', 'name']) || couche.titre;
+            const statut = valeur(p, ['statut', 'status']);
+            let html = '<div class="popup"><h4>' + echapper(nom) + '</h4>';
+            if (statut) {
+                html += '<span class="badge" style="background:' + couleurStatut(statut) + '">' + echapper(statut) + '</span>';
+            }
+            let lignes = '';
+            CHAMPS.forEach(function (c) {
+                const v = valeur(p, c[1]);
+                if (v !== null) lignes += '<dt>' + c[0] + '</dt><dd>' + echapper(v) + '</dd>';
+            });
+            if (lignes) html += '<dl>' + lignes + '</dl>';
+            return html + '</div>';
+        }
+
+        function iconePoint(forme, couleur) {
+            return L.divIcon({
+                className: '',
+                html: '<span class="pt pt-' + forme + '" style="background:' + couleur + '"></span>',
+                iconSize: [18, 18],
+                iconAnchor: [9, 9]
+            });
+        }
+
+        function statutDeFeature(feature) {
+            return valeur(feature.properties || {}, ['statut', 'status']);
+        }
+
+        /* ---------- Carte ---------- */
+        const carte = L.map('carte').setView([12.2544, -1.25548], 8);
+
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 20,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        }).addTo(carte);
+
+        /* ---------- Couches ---------- */
+        const controleCouches = L.control.layers(null, null, { collapsed: false }).addTo(carte);
+
+        function creerCouche(couche) {
+            return L.geoJSON(null, {
+                pointToLayer: function (feature, latlng) {
+                    return L.marker(latlng, { icon: iconePoint(couche.forme, couleurStatut(statutDeFeature(feature))) });
+                },
+                style: function (feature) {
+                    const c = couleurStatut(statutDeFeature(feature));
+                    if (couche.type === 'ligne') return { color: c, weight: 8, opacity: 0.9 };
+                    return { color: '#2b3440', weight: 2, fillColor: c, fillOpacity: 0.45 };
+                },
+                onEachFeature: function (feature, layer) {
+                    layer.bindPopup(function () { return contenuPopup(feature, couche); });
+                }
+            });
+        }
+
+        // Les couches sont créées vides pour que le contrôle soit disponible tout de suite
+        COUCHES.forEach(function (couche) {
+            couche.calque = creerCouche(couche).addTo(carte);
+            controleCouches.addOverlay(couche.calque, couche.titre);
+        });
+
+        /* ---------- Chargement depuis l'API ---------- */
+        const etat = document.getElementById('etat');
+
+        function afficherEtat(couche, ok, texte) {
+            let el = document.getElementById('etat-' + couche.id);
+            if (!el) {
+                el = document.createElement('span');
+                el.id = 'etat-' + couche.id;
+                etat.appendChild(el);
+            }
+            el.className = ok ? 'ok' : 'ko';
+            el.textContent = couche.titre + ' : ' + texte;
+        }
+
+        // Accepte un GeoJSON simple ou une réponse paginée de DRF
+        function extraireGeoJSON(donnees) {
+            if (donnees && donnees.results) return donnees.results;
+            return donnees;
+        }
+
+        async function charger(couche) {
+            try {
+                const reponse = await fetch(couche.url);
+                if (!reponse.ok) throw new Error('HTTP ' + reponse.status);
+                const geojson = extraireGeoJSON(await reponse.json());
+                couche.calque.addData(geojson);
+                const n = (geojson.features || []).length;
+                afficherEtat(couche, true, n + (n > 1 ? ' éléments' : ' élément'));
+            } catch (e) {
+                console.error(couche.titre, e);
+                afficherEtat(couche, false, 'indisponible');
+            }
+        }
+
+        Promise.all(COUCHES.map(charger)).then(function () {
+            const limites = L.featureGroup(COUCHES.map(function (c) { return c.calque; })).getBounds();
+            if (limites.isValid()) carte.fitBounds(limites, { padding: [30, 30] });
+        });
+
+        /* ---------- Légende ---------- */
+        const legende = L.control({ position: 'bottomleft' });
+        legende.onAdd = function () {
+            const div = L.DomUtil.create('div', 'legende');
+            let html = '<b>Legende projet</b>';
+            STATUTS.forEach(function (s) {
+                html += '<div><i style="background:' + s.couleur + '"></i>' + s.libelle + '</div>';
+            });
+            html += '<b style="margin-top:6px">Type</b>';
+            html += '<div>● Forage &nbsp; ◆ Électrification solaire</div>';
+            html += '<div> ▭ Installation solaire &nbsp; ━ Route</div>';
+            div.innerHTML = html;
+            return div;
+        };
+        legende.addTo(carte);
+    </script>
 </body>
+
 </html>
